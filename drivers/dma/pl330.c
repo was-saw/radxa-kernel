@@ -2731,6 +2731,20 @@ static void pl330_issue_pending(struct dma_chan *chan)
 	pl330_tasklet(&pch->task);
 }
 
+#ifdef CONFIG_PL330_DMA_OOB
+static int pl330_pulse_oob(struct dma_chan *chan)
+{
+	printk("pl330_pulse_oob\n");
+	return -ENOTSUPP;
+}
+#else
+static int pl330_pulse_oob(struct dma_chan *chan)
+{
+	printk("pl330_pulse_inband\n");
+	return -ENOTSUPP;
+}
+#endif
+
 /*
  * We returned the last one of the circular list of descriptor(s)
  * from prep_xxx, so the argument to submit corresponds to the last
@@ -3184,6 +3198,7 @@ pl330_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 
 static irqreturn_t pl330_irq_handler(int irq, void *data)
 {
+	printk("enter irq handler\n");
 	if (pl330_update(data))
 		return IRQ_HANDLED;
 	else
@@ -3351,7 +3366,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 		irq = adev->irq[i];
 		if (irq) {
 			ret = devm_request_irq(&adev->dev, irq,
-					       pl330_irq_handler, 0,
+					       pl330_irq_handler, IRQF_OOB,
 					       dev_name(&adev->dev), pl330);
 			if (ret)
 				return ret;
@@ -3410,6 +3425,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 		dma_cap_set(DMA_SLAVE, pd->cap_mask);
 		dma_cap_set(DMA_CYCLIC, pd->cap_mask);
 		dma_cap_set(DMA_PRIVATE, pd->cap_mask);
+		dma_cap_set(DMA_OOB, pd->cap_mask);
 		dma_cap_set(DMA_INTERLEAVE, pd->cap_mask);
 		dma_cap_set(DMA_REPEAT, pd->cap_mask);
 		dma_cap_set(DMA_LOAD_EOT, pd->cap_mask);
@@ -3426,6 +3442,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 	pd->device_pause = pl330_pause;
 	pd->device_terminate_all = pl330_terminate_all;
 	pd->device_issue_pending = pl330_issue_pending;
+	pd->device_pulse_oob = pl330_pulse_oob;
 	pd->src_addr_widths = PL330_DMA_BUSWIDTHS;
 	pd->dst_addr_widths = PL330_DMA_BUSWIDTHS;
 	pd->directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV);

@@ -747,6 +747,102 @@ static int rockchip_spi_config(struct rockchip_spi *rs,
 	return 0;
 }
 
+static void rockchip_spi_oob_config(struct rockchip_spi *rs,
+	struct spi_device *spi, struct spi_oob_transfer *xfer, bool slave_mode)
+{
+	printk("rockchip_spi_oob_config\n");
+	u32 cr0 = CR0_FRF_SPI  << CR0_FRF_OFFSET
+		| CR0_BHT_8BIT << CR0_BHT_OFFSET
+		| CR0_SSD_ONE  << CR0_SSD_OFFSET
+		| CR0_EM_BIG   << CR0_EM_OFFSET;
+	u32 cr1;
+	u32 dmacr = 0;
+
+	if (slave_mode)
+		cr0 |= CR0_OPM_SLAVE << CR0_OPM_OFFSET;
+	rs->slave_aborted = false;
+
+	cr0 |= rs->rsd << CR0_RSD_OFFSET;
+	cr0 |= rs->csm << CR0_CSM_OFFSET;
+	cr0 |= (spi->mode & 0x3U) << CR0_SCPH_OFFSET;
+	if (spi->mode & SPI_LSB_FIRST)
+		cr0 |= CR0_FBM_LSB << CR0_FBM_OFFSET;
+	if (spi->mode & SPI_CS_HIGH && !spi_get_csgpiod(spi, 0))
+		cr0 |= BIT(spi->chip_select) << CR0_SOI_OFFSET;
+
+	cr0 |= CR0_XFM_TR << CR0_XFM_OFFSET;
+
+	switch (xfer->setup.bits_per_word) {
+	case 4:
+		cr0 |= CR0_DFS_4BIT << CR0_DFS_OFFSET;
+		cr1 = xfer->setup.frame_len - 1;
+		break;
+	case 8:
+		cr0 |= CR0_DFS_8BIT << CR0_DFS_OFFSET;
+		cr1 = xfer->setup.frame_len - 1;
+		break;
+	case 16:
+		cr0 |= CR0_DFS_16BIT << CR0_DFS_OFFSET;
+		cr1 = xfer->setup.frame_len / 2 - 1;
+		break;
+	}
+
+
+	dmacr |= TF_DMA_EN;
+	dmacr |= RF_DMA_EN;
+
+	/*
+	 * If speed is larger than IO_DRIVER_4MA_MAX_SCLK_OUT,
+	 * set higher driver strength.
+	 */
+	if (rs->high_speed_state) {
+		if (rs->freq > IO_DRIVER_4MA_MAX_SCLK_OUT)
+			pinctrl_select_state(rs->dev->pins->p,
+					     rs->high_speed_state);
+		else
+			pinctrl_select_state(rs->dev->pins->p,
+					     rs->dev->pins->default_state);
+	}
+
+	writel_relaxed(cr0, rs->regs + ROCKCHIP_SPI_CTRLR0);
+	writel_relaxed(cr1, rs->regs + ROCKCHIP_SPI_CTRLR1);
+
+	/* unfortunately setting the fifo threshold level to generate an
+	 * interrupt exactly when the fifo is full doesn't seem to work,
+	 * so we need the strict inequality here
+	 */
+	if ((xfer->setup.frame_len / rs->n_bytes) < rs->fifo_len)
+		writel_relaxed(xfer->setup.frame_len / rs->n_bytes - 1, rs->regs + ROCKCHIP_SPI_RXFTLR);
+	else
+		writel_relaxed(rs->fifo_len / 2 - 1, rs->regs + ROCKCHIP_SPI_RXFTLR);
+
+	writel_relaxed(rs->fifo_len / 2 - 1, rs->regs + ROCKCHIP_SPI_DMATDLR);
+	writel_relaxed(rockchip_spi_calc_burst_size(xfer->setup.frame_len / rs->n_bytes) - 1,
+		       rs->regs + ROCKCHIP_SPI_DMARDLR);
+	writel_relaxed(dmacr, rs->regs + ROCKCHIP_SPI_DMACR);
+
+	if (rs->max_baud_div_in_cpha && xfer->setup.speed_hz != rs->speed_hz) {
+		/* the minimum divisor is 2 */
+		if (rs->freq < 2 * xfer->setup.speed_hz) {
+			clk_set_rate(rs->spiclk, 2 * xfer->setup.speed_hz);
+			rs->freq = clk_get_rate(rs->spiclk);
+		}
+
+		if ((spi->mode & SPI_CPHA) && (DIV_ROUND_UP(rs->freq, xfer->setup.speed_hz) > rs->max_baud_div_in_cpha)) {
+			clk_set_rate(rs->spiclk, rs->max_baud_div_in_cpha * xfer->setup.speed_hz);
+			rs->freq = clk_get_rate(rs->spiclk);
+		}
+	}
+
+	/* the hardware only supports an even clock divisor, so
+	 * round divisor = spiclk / speed up to nearest even number
+	 * so that the resulting speed is <= the requested speed
+	 */
+	writel_relaxed(2 * DIV_ROUND_UP(rs->freq, 2 * xfer->setup.speed_hz),
+			rs->regs + ROCKCHIP_SPI_BAUDR);
+	rs->speed_hz = xfer->setup.speed_hz;
+}
+
 static size_t rockchip_spi_max_transfer_size(struct spi_device *spi)
 {
 	return ROCKCHIP_SPI_MAX_TRANLEN;
@@ -922,6 +1018,70 @@ static int rockchip_spi_setup(struct spi_device *spi)
 
 	return 0;
 }
+
+#ifdef CONFIG_SPI_ROCKCHIP_OOB
+
+static int rockchip_spi_prepare_oob_transfer(struct spi_controller *ctlr,
+					struct spi_oob_transfer *xfer)
+{
+	if (xfer->setup.frame_len > ROCKCHIP_SPI_MAX_TRANLEN - 3)
+		return -EINVAL;
+	printk("rockchip_spi_prepare_oob_transfer\n");
+
+	return 0;
+}
+
+static void rockchip_spi_start_oob_transfer(struct spi_controller *ctlr,
+					struct spi_oob_transfer *xfer)
+{
+	printk("rockchip_spi_start_oob_transfer\n");
+	struct rockchip_spi *rs = spi_controller_get_devdata(ctlr);
+	struct spi_device *spi = xfer->spi;
+	rockchip_spi_oob_config(rs, spi, xfer, ctlr->slave_abort);
+}
+
+static void rockchip_spi_pulse_oob_transfer(struct spi_controller *ctlr,
+					struct spi_oob_transfer *xfer)
+{
+	printk("rockchip_spi_pulse_oob_transfer\n");
+	struct rockchip_spi *rs = spi_controller_get_devdata(ctlr);
+
+	/* unfortunately setting the fifo threshold level to generate an
+	 * interrupt exactly when the fifo is full doesn't seem to work,
+	 * so we need the strict inequality here
+	 */
+	 if ((xfer->setup.frame_len / rs->n_bytes) < rs->fifo_len)
+		writel_relaxed(xfer->setup.frame_len / rs->n_bytes - 1, rs->regs + ROCKCHIP_SPI_RXFTLR);
+ 	else
+		writel_relaxed(rs->fifo_len / 2 - 1, rs->regs + ROCKCHIP_SPI_RXFTLR);
+
+ 	writel_relaxed(rs->fifo_len / 2 - 1, rs->regs + ROCKCHIP_SPI_DMATDLR);
+ 	writel_relaxed(rockchip_spi_calc_burst_size(xfer->setup.frame_len / rs->n_bytes) - 1,
+			rs->regs + ROCKCHIP_SPI_DMARDLR);
+
+}
+
+static void rockchip_spi_terminate_oob_transfer(struct spi_controller *ctlr,
+					struct spi_oob_transfer *xfer)
+{
+	struct rockchip_spi *rs = spi_controller_get_devdata(ctlr);
+
+	/* stop running spi transfer
+	 * this also flushes both rx and tx fifos
+	 */
+	 spi_enable_chip(rs, false);
+
+	 /* make sure all interrupts are masked and status cleared */
+	 writel_relaxed(0, rs->regs + ROCKCHIP_SPI_IMR);
+	 writel_relaxed(0xffffffff, rs->regs + ROCKCHIP_SPI_ICR);
+}
+
+#else
+#define rockchip_spi_prepare_oob_transfer	NULL
+#define rockchip_spi_start_oob_transfer		NULL
+#define rockchip_spi_pulse_oob_transfer		NULL
+#define rockchip_spi_terminate_oob_transfer	NULL
+#endif
 
 static int rockchip_spi_misc_open(struct inode *inode, struct file *filp)
 {
@@ -1152,6 +1312,10 @@ static int rockchip_spi_probe(struct platform_device *pdev)
 	ctlr->transfer_one = rockchip_spi_transfer_one;
 	ctlr->max_transfer_size = rockchip_spi_max_transfer_size;
 	ctlr->handle_err = rockchip_spi_handle_err;
+	ctlr->prepare_oob_transfer = rockchip_spi_prepare_oob_transfer;
+	ctlr->start_oob_transfer = rockchip_spi_start_oob_transfer;
+	ctlr->pulse_oob_transfer = rockchip_spi_pulse_oob_transfer;
+	ctlr->terminate_oob_transfer = rockchip_spi_terminate_oob_transfer;
 
 	ctlr->dma_tx = dma_request_chan(rs->dev, "tx");
 	if (IS_ERR(ctlr->dma_tx)) {
