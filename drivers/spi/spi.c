@@ -4453,6 +4453,7 @@ static int bus_unlock_oob(struct spi_controller *ctlr)
 static int prepare_oob_dma(struct spi_controller *ctlr,
 			struct spi_oob_transfer *xfer)
 {
+	printk(KERN_INFO "prepare_oob_dma\n");
 	struct dma_async_tx_descriptor *desc;
 	size_t len = xfer->setup.frame_len;
 	dma_cookie_t cookie;
@@ -4555,6 +4556,7 @@ static int validate_oob_xfer(struct spi_device *spi,
 int spi_prepare_oob_transfer(struct spi_device *spi,
 			struct spi_oob_transfer *xfer)
 {
+	printk(KERN_INFO "spi_prepare_oob_transfer\n");
 	struct spi_controller *ctlr;
 	dma_addr_t dma_addr;
 	size_t alen, iolen;

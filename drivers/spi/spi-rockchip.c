@@ -1038,6 +1038,10 @@ static void rockchip_spi_start_oob_transfer(struct spi_controller *ctlr,
 	struct rockchip_spi *rs = spi_controller_get_devdata(ctlr);
 	struct spi_device *spi = xfer->spi;
 	rockchip_spi_oob_config(rs, spi, xfer, ctlr->slave_abort);
+	if (rs->cs_inactive)
+		writel_relaxed(INT_CS_INACTIVE, rs->regs + ROCKCHIP_SPI_IMR);
+
+	spi_enable_chip(rs, true);
 }
 
 static void rockchip_spi_pulse_oob_transfer(struct spi_controller *ctlr,
