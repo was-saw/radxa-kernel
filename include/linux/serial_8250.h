@@ -141,6 +141,9 @@ struct uart_8250_port {
 	/* Serial port overrun backoff */
 	struct delayed_work overrun_backoff;
 	u32 overrun_backoff_time_ms;
+
+	struct device self_dev;
+	struct cdev cdev;
 };
 
 static inline struct uart_8250_port *up_to_u8250p(struct uart_port *up)

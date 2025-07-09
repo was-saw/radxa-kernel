@@ -41,6 +41,7 @@
 #include <asm/irq.h>
 
 #include "8250.h"
+#include "8250_cdev.h"
 
 /*
  * Configuration:
@@ -1027,8 +1028,9 @@ static void serial_8250_overrun_backoff_work(struct work_struct *work)
  */
 int serial8250_register_8250_port(const struct uart_8250_port *up)
 {
+	printk(KERN_INFO "=====================serial8250_register_8250_port\n");
 	struct uart_8250_port *uart;
-	int ret = -ENOSPC;
+	int ret = -ENOSPC, err;
 
 	if (up->port.uartclk == 0)
 		return -EINVAL;
@@ -1168,6 +1170,13 @@ int serial8250_register_8250_port(const struct uart_8250_port *up)
 		}
 	}
 
+	err = uart_cdev_register(uart);
+	if(err != 0) {
+		pr_err("uart_cdev_register failed\n");
+		ret = err;
+		goto err;
+	}
+
 	mutex_unlock(&serial_mutex);
 
 	return ret;
@@ -1188,6 +1197,7 @@ EXPORT_SYMBOL(serial8250_register_8250_port);
  */
 void serial8250_unregister_port(int line)
 {
+	printk(KERN_INFO "=====================serial8250_unregister_port\n");
 	struct uart_8250_port *uart = &serial8250_ports[line];
 
 	mutex_lock(&serial_mutex);
@@ -1212,6 +1222,7 @@ void serial8250_unregister_port(int line)
 	} else {
 		uart->port.dev = NULL;
 	}
+	uart_cdev_unregister(uart);
 	mutex_unlock(&serial_mutex);
 }
 EXPORT_SYMBOL(serial8250_unregister_port);
@@ -1228,6 +1239,12 @@ static int __init serial8250_init(void)
 	pr_info("Serial: 8250/16550 driver, %d ports, IRQ sharing %sabled\n",
 		nr_uarts, share_irqs ? "en" : "dis");
 
+	ret = uart_cdev_init();
+	if (ret) {
+		pr_err("Failed to initialize uart_cdev: %d\n", ret);
+		goto out;
+	}
+
 #ifdef CONFIG_SPARC
 	ret = sunserial_register_minors(&serial8250_reg, UART_NR);
 #else
@@ -1235,7 +1252,7 @@ static int __init serial8250_init(void)
 	ret = uart_register_driver(&serial8250_reg);
 #endif
 	if (ret)
-		goto out;
+		goto unreg_cdev;
 
 	ret = serial8250_pnp_init();
 	if (ret)
@@ -1269,6 +1286,8 @@ unreg_uart_drv:
 #else
 	uart_unregister_driver(&serial8250_reg);
 #endif
+unreg_cdev:
+	uart_cdev_exit();
 out:
 	return ret;
 }
@@ -1294,6 +1313,8 @@ static void __exit serial8250_exit(void)
 #else
 	uart_unregister_driver(&serial8250_reg);
 #endif
+
+	uart_cdev_exit();
 }
 
 #ifdef CONFIG_ROCKCHIP_THUNDER_BOOT

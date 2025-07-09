@@ -114,7 +114,7 @@ void dw8250_do_set_termios(struct uart_port *p, struct ktermios *termios,
 	p->ignore_status_mask |= DW_UART_LSR_ADDR_RCVD;
 	p->read_status_mask |= DW_UART_LSR_ADDR_RCVD;
 }
-EXPORT_SYMBOL_GPL(dw8250_do_set_termios);
+// EXPORT_SYMBOL_GPL(dw8250_do_set_termios);
 
 #ifndef CONFIG_ARCH_ROCKCHIP
 /*
