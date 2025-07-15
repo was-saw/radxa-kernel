@@ -114,9 +114,17 @@ static const struct file_operations uart_fops = {
 	.oob_ioctl = uart_cdev_oob_ioctl,
 };
 
+// 添加设备 release 函数
+static void uart_self_dev_release(struct device *dev)
+{
+    // 这里可以添加清理代码，如果没有特殊需求可以留空
+    printk(KERN_INFO "uart_self_dev_release: device %s released\n", dev_name(dev));
+}
+
+
 int uart_cdev_register(struct uart_8250_port *up)
 {
-	printk(KERN_INFO "=====================uart_cdev_register\n");
+	printk(KERN_INFO "version: %d=====================uart_cdev_register\n", VERSION);
 	struct uart_port *p = &up->port;
 	int ret;
 	dev_t devt = MKDEV(MAJOR(uart_devt), p->line);
@@ -134,6 +142,7 @@ int uart_cdev_register(struct uart_8250_port *up)
 	up->self_dev.devt = devt;
 	up->self_dev.class = uart_cdev_class;
 	up->self_dev.parent = NULL;
+	up->self_dev.release = uart_self_dev_release;
 	dev_set_name(&up->self_dev, "uart%d", p->line);
 
 	ret = cdev_device_add(&up->cdev, &up->self_dev);
@@ -151,8 +160,8 @@ EXPORT_SYMBOL_GPL(uart_cdev_register);
 
 void uart_cdev_unregister(struct uart_8250_port *up)
 {
-	printk(KERN_INFO "=====================uart_cdev_unregister\n");
-	
+	printk(KERN_INFO "version: %d=====================uart_cdev_unregister\n", VERSION);
+
 	// 检查设备是否已注册
 	if (device_is_registered(&up->self_dev)) {
 		printk(KERN_INFO "uart_cdev_unregister: removing device uart%d\n", up->port.line);
